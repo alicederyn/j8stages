@@ -104,9 +104,7 @@ public class LocalExecutor {
         public void execute(Runnable command) {
             LocalExecutor currentExecutor = THREAD_DATA.get().activeExecutors.peek();
             boolean executorIsOld =
-                    Thread.currentThread() == thread.get()
-                            && currentExecutor != null
-                            && currentExecutor.stamp <= stamp;
+                    Thread.currentThread() == thread.get() && currentExecutor != null && currentExecutor.stamp <= stamp;
             if (currentExecutor == null || executorIsOld) {
                 runNow(command);
             } else {

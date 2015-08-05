@@ -149,8 +149,7 @@ public class LocalExecutorTest {
     private static class WorkerThread implements AutoCloseable {
         private final ExecutorService executor =
                 newSingleThreadExecutor(
-                        new ThreadFactoryBuilder().setNameFormat("LocalExecutorTest worker thread")
-                                .build());
+                        new ThreadFactoryBuilder().setNameFormat("LocalExecutorTest worker thread").build());
 
         public void run(Runnable task) {
             try {

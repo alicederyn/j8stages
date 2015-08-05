@@ -1,22 +1,34 @@
 package org.inferred.cjp39.j8stages;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.EnumSet;
+import java.util.Set;
 
 public class ExceptionCloner {
 
     /**
-     * Returns a clone of x. This clone may be shallow or deep, depending on
-     * Java's security settings.
+     * Returns a clone of {@code x}. This clone may be shallow or deep,
+     * depending on Java's security settings.
      */
     public static <X extends Throwable> X clone(X x) {
+        return clone(x, EnumSet.noneOf(ExceptionOutputStream.ExceptionFields.class));
+    }
+
+    /**
+     * Returns a partial or full clone of {@code x}. Full clones may be shallow
+     * or deep, depending on Java's security settings.
+     *
+     * @param x
+     *            the exception to clone
+     * @param the
+     *            fields to discard on {@code x}
+     * @throws SecurityException
+     *             if {@code discard} is not empty but Java's security settings
+     *             prevent us replacing fields
+     */
+    public static <X extends Throwable> X clone(X x, Set<ExceptionOutputStream.ExceptionFields> discard) {
         try {
-            ExceptionOutputStream out = new ExceptionOutputStream(x);
+            ExceptionOutputStream out = new ExceptionOutputStream(x, discard);
             out.writeObject(x);
             out.close();
             ExceptionOutputStream.ExceptionInputStream in = out.new ExceptionInputStream();
@@ -26,55 +38,6 @@ public class ExceptionCloner {
             return clone;
         } catch (IOException | ClassNotFoundException e) {
             throw new RuntimeException(e);
-        }
-    }
-
-    private static class ExceptionOutputStream extends ObjectOutputStream {
-
-        final ByteArrayOutputStream bytes;
-        final Throwable x;
-        final List<Object> members = new ArrayList<>();
-
-        ExceptionOutputStream(Throwable x) throws IOException {
-            this(x, new ByteArrayOutputStream());
-        }
-
-        private ExceptionOutputStream(Throwable x, ByteArrayOutputStream bytes) throws IOException {
-            super(bytes);
-            this.bytes = bytes;
-            this.x = x;
-            try {
-                /*
-                 * As an optimization, we do not serialize the exception's
-                 * members. If the security manager prevents us, however, we can
-                 * fall back to deep cloning.
-                 */
-                super.enableReplaceObject(true);
-            } catch (SecurityException e) {}
-        }
-
-        @Override
-        protected Object replaceObject(Object obj) {
-            if (obj == x) {
-                return obj;
-            }
-            members.add(obj);
-            return (members.size() - 1);
-        }
-
-        class ExceptionInputStream extends ObjectInputStream {
-            ExceptionInputStream() throws IOException {
-                super(new ByteArrayInputStream(bytes.toByteArray()));
-                super.enableResolveObject(true);
-            }
-
-            @Override
-            protected Object resolveObject(Object obj) {
-                if (obj instanceof Integer && !members.isEmpty()) {
-                    return members.get((Integer) obj);
-                }
-                return obj;
-            }
         }
     }
 

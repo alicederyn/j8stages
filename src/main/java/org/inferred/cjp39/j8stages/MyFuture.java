@@ -24,6 +24,7 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.Uninterruptibles;
@@ -133,9 +134,7 @@ public class MyFuture<T> implements CompletionStage<T> {
      * {@code second} completes, completes with the corresponding result (or
      * exception).
      */
-    public static <T> MyFuture<T> eitherOf(
-            CompletionStage<? extends T> first,
-            CompletionStage<? extends T> second) {
+    public static <T> MyFuture<T> eitherOf(CompletionStage<? extends T> first, CompletionStage<? extends T> second) {
         MyFuture<T> result = new MyFuture<>();
         result.completeFrom(first);
         result.completeFrom(second);
@@ -178,6 +177,15 @@ public class MyFuture<T> implements CompletionStage<T> {
         return result;
     }
 
+    @VisibleForTesting
+    static class RethrownException extends Exception {
+        private static final long serialVersionUID = 1296586904077392396L;
+
+        RethrownException(String message) {
+            super(message);
+        }
+    }
+
     @SuppressWarnings("rawtypes")
     private static final AtomicReferenceFieldUpdater<MyFuture, Object> STATE =
             AtomicReferenceFieldUpdater.newUpdater(MyFuture.class, Object.class, "state");
@@ -208,51 +216,60 @@ public class MyFuture<T> implements CompletionStage<T> {
     private static final CancellationAction<CancellationException> CANCELLATION_EXCEPTION =
             (cause) -> (CancellationException) new CancellationException().initCause(cause);
 
+    private static CompletionException rethrow(Throwable t) {
+        if (t instanceof RuntimeException) {
+            RuntimeException e = (RuntimeException) t;
+            RuntimeException clone = ExceptionCloner.clone(e);
+            clone.addSuppressed(new RethrownException("Completion exception rethrown"));
+            throw clone;
+        } else if (t instanceof Error) {
+            Error e = (Error) t;
+            Error clone = ExceptionCloner.clone(e);
+            clone.addSuppressed(new RethrownException("Completion error rethrown"));
+            throw clone;
+        }
+        return new CompletionException(t);
+    }
+
     /**
      * Returns the result value (or throws any encountered exception) if
      * completed, else returns the given valueIfAbsent.
+     *
+     * <p>
+     * If the future completed exceptionally with a runtime exception or error,
+     * a copy will be thrown; if with a checked exception, it will be wrapped in
+     * a {@link CompletionException}.
      *
      * @param valueIfAbsent
      *            the value to return if not completed
      * @return the result value, if completed, else the given valueIfAbsent
      * @throws CancellationException
      *             if the computation was cancelled
+     * @throws RuntimeException
+     *             if this future completed exceptionally with a
+     *             RuntimeException
      * @throws CompletionException
-     *             if this future completed exceptionally or a completion
-     *             computation threw an exception
+     *             if this future completed exceptionally with a checked
+     *             exception
+     * @throws Error
+     *             if this future completed exceptionally with an Error
      */
     public T getNow(T valueIfAbsent) {
-        return internalGet(
-                CompletionException::new,
-                CANCELLATION_EXCEPTION,
-                null,
-                () -> valueIfAbsent);
+        return internalGet(MyFuture::rethrow, MyFuture::rethrow, null, () -> valueIfAbsent);
     }
 
     public T get() throws InterruptedException {
-        return internalGet(
-                CompletionException::new,
-                CANCELLATION_EXCEPTION,
-                CountDownLatch::await,
-                null);
+        return internalGet(MyFuture::rethrow, MyFuture::rethrow, CountDownLatch::await, null);
     }
 
     public T getUninterruptibly() {
-        return internalGet(
-                CompletionException::new,
-                CANCELLATION_EXCEPTION,
-                Uninterruptibles::awaitUninterruptibly,
-                null);
+        return internalGet(MyFuture::rethrow, MyFuture::rethrow, Uninterruptibles::awaitUninterruptibly, null);
     }
 
     public T tryGet(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException {
-        return internalGet(
-                CompletionException::new,
-                CANCELLATION_EXCEPTION,
-                latch -> latch.await(timeout, unit),
-                () -> {
-                    throw new TimeoutException();
-                });
+        return internalGet(MyFuture::rethrow, MyFuture::rethrow, latch -> latch.await(timeout, unit), () -> {
+            throw new TimeoutException();
+        });
     }
 
     public T tryGetUninterruptibly(long timeout, TimeUnit unit) throws TimeoutException {
@@ -460,10 +477,7 @@ public class MyFuture<T> implements CompletionStage<T> {
     }
 
     @Override
-    public MyFuture<Void> runAfterBothAsync(
-            CompletionStage<?> other,
-            Runnable action,
-            Executor executor) {
+    public MyFuture<Void> runAfterBothAsync(CompletionStage<?> other, Runnable action, Executor executor) {
         return thenCombineAsync(other, (t, u) -> {
             action.run();
             return null;
@@ -479,16 +493,12 @@ public class MyFuture<T> implements CompletionStage<T> {
     }
 
     @Override
-    public <U> MyFuture<U> applyToEither(
-            CompletionStage<? extends T> other,
-            Function<? super T, U> fn) {
+    public <U> MyFuture<U> applyToEither(CompletionStage<? extends T> other, Function<? super T, U> fn) {
         return or(other).thenApply(fn);
     }
 
     @Override
-    public <U> MyFuture<U> applyToEitherAsync(
-            CompletionStage<? extends T> other,
-            Function<? super T, U> fn) {
+    public <U> MyFuture<U> applyToEitherAsync(CompletionStage<? extends T> other, Function<? super T, U> fn) {
         return or(other).thenApplyAsync(fn);
     }
 
@@ -501,16 +511,12 @@ public class MyFuture<T> implements CompletionStage<T> {
     }
 
     @Override
-    public MyFuture<Void> acceptEither(
-            CompletionStage<? extends T> other,
-            Consumer<? super T> action) {
+    public MyFuture<Void> acceptEither(CompletionStage<? extends T> other, Consumer<? super T> action) {
         return or(other).thenAccept(action);
     }
 
     @Override
-    public MyFuture<Void> acceptEitherAsync(
-            CompletionStage<? extends T> other,
-            Consumer<? super T> action) {
+    public MyFuture<Void> acceptEitherAsync(CompletionStage<? extends T> other, Consumer<? super T> action) {
         return or(other).thenAcceptAsync(action);
     }
 
@@ -533,10 +539,7 @@ public class MyFuture<T> implements CompletionStage<T> {
     }
 
     @Override
-    public MyFuture<Void> runAfterEitherAsync(
-            CompletionStage<?> other,
-            Runnable action,
-            Executor executor) {
+    public MyFuture<Void> runAfterEitherAsync(CompletionStage<?> other, Runnable action, Executor executor) {
         return eitherOf(this, other).thenRunAsync(action, executor);
     }
 
@@ -551,9 +554,7 @@ public class MyFuture<T> implements CompletionStage<T> {
     }
 
     @Override
-    public <U> MyFuture<U> thenComposeAsync(
-            Function<? super T, ? extends CompletionStage<U>> fn,
-            Executor executor) {
+    public <U> MyFuture<U> thenComposeAsync(Function<? super T, ? extends CompletionStage<U>> fn, Executor executor) {
         return addInternalCallback(new ComposingCallback<>(fn, executor)).getFuture();
     }
 
@@ -628,9 +629,7 @@ public class MyFuture<T> implements CompletionStage<T> {
      * @return the new future
      */
     @Override
-    public MyFuture<T> whenCompleteAsync(
-            BiConsumer<? super T, ? super Throwable> action,
-            Executor executor) {
+    public MyFuture<T> whenCompleteAsync(BiConsumer<? super T, ? super Throwable> action, Executor executor) {
         return addInternalCallback(new WhenCompleteCallback<T>(action, executor)).getFuture();
     }
 
@@ -645,9 +644,7 @@ public class MyFuture<T> implements CompletionStage<T> {
     }
 
     @Override
-    public <U> MyFuture<U> handleAsync(
-            BiFunction<? super T, Throwable, ? extends U> fn,
-            Executor executor) {
+    public <U> MyFuture<U> handleAsync(BiFunction<? super T, Throwable, ? extends U> fn, Executor executor) {
         return addInternalCallback(new HandlingCallback<T, U>(fn, executor)).getFuture();
     }
 
@@ -660,8 +657,7 @@ public class MyFuture<T> implements CompletionStage<T> {
      */
     @Override
     public CompletableFuture<T> toCompletableFuture() {
-        CompletableFuture<T> future =
-                addInternalCallback(new CompletableFutureCallback<T>()).getFuture();
+        CompletableFuture<T> future = addInternalCallback(new CompletableFutureCallback<T>()).getFuture();
         completeFrom(future);
         return future;
     }
@@ -684,18 +680,12 @@ public class MyFuture<T> implements CompletionStage<T> {
 
         @Override
         public T get() throws InterruptedException, ExecutionException {
-            return MyFuture.this.internalGet(
-                    ExecutionException::new,
-                    ExecutionException::new,
-                    CountDownLatch::await,
-                    null);
+            return MyFuture.this
+                    .internalGet(ExecutionException::new, ExecutionException::new, CountDownLatch::await, null);
         }
 
         @Override
-        public T get(long timeout, TimeUnit unit)
-                throws InterruptedException,
-                    ExecutionException,
-                    TimeoutException {
+        public T get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
             return MyFuture.this.internalGet(
                     ExecutionException::new,
                     ExecutionException::new,
@@ -737,9 +727,7 @@ public class MyFuture<T> implements CompletionStage<T> {
             try {
                 if (state instanceof Failure) {
                     Throwable cause = ((Failure) state).cause;
-                    e.execute(
-                            () -> callback.onFailure(
-                                    cause == null ? new CancellationException() : cause));
+                    e.execute(() -> callback.onFailure(cause == null ? new CancellationException() : cause));
                 } else {
                     @SuppressWarnings("unchecked")
                     T result = (T) state;
@@ -841,8 +829,7 @@ public class MyFuture<T> implements CompletionStage<T> {
                     try {
                         CompletionStage<U> nextStage = fn.apply(t);
                         if (nextStage == null) {
-                            future.completeExceptionally(
-                                    new NullPointerException("apply() returned null: " + fn));
+                            future.completeExceptionally(new NullPointerException("apply() returned null: " + fn));
                         } else {
                             future.completeFrom(nextStage);
                         }
@@ -963,7 +950,7 @@ public class MyFuture<T> implements CompletionStage<T> {
         CallbackStack(Callback action, Callback next) {
             this.action = checkNotNull(action);
             this.next = checkNotNull(next);
-            assert !(action instanceof CallbackStack);
+            assert!(action instanceof CallbackStack);
             assert next != NOTHING;
         }
 
@@ -1102,10 +1089,10 @@ public class MyFuture<T> implements CompletionStage<T> {
         Object currentState = null;
         do {
             currentState = state;
-            if ( !(currentState instanceof Callback)) {
+            if (!(currentState instanceof Callback)) {
                 return false;
             }
-        } while ( !compareAndSwapState(state, finalState));
+        } while (!compareAndSwapState(state, finalState));
         ((Callback) currentState).onCompleteAsync(finalState);
         return true;
     }
@@ -1150,9 +1137,7 @@ public class MyFuture<T> implements CompletionStage<T> {
             } while (currentState instanceof Callback && !addedCallback);
         }
         if (currentState instanceof Callback) {
-            checkArgument(
-                    fallback != null,
-                    "Blocking action did not wait for latch, and no fallback provided");
+            checkArgument(fallback != null, "Blocking action did not wait for latch, and no fallback provided");
             return fallback.getFallback();
         } else if (currentState instanceof Failure) {
             Throwable cause = ((Failure) currentState).cause;
