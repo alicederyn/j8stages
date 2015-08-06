@@ -1069,19 +1069,20 @@ public class MyFuture<T> implements CompletionStage<T> {
      * the data is available, without StackOverflowErrors.
      */
     private <C extends Callback> C addInternalCallback(C callback) {
-        runNow(() -> {
-            Object currentState = null;
-            Callback newState;
-            do {
-                currentState = state;
-                if (currentState instanceof Callback) {
-                    newState = ((Callback) currentState).and(callback);
-                } else {
-                    callback.onComplete(currentState);
-                    newState = null;
-                }
-            } while (newState != null && !compareAndSwapState(currentState, newState));
-        });
+        Object currentState = null;
+        Callback newState;
+        do {
+            currentState = state;
+            if (currentState instanceof Callback) {
+                newState = ((Callback) currentState).and(callback);
+            } else {
+                Object finalState = currentState;
+                runNow(() -> {
+                    callback.onComplete(finalState);
+                });
+                newState = null;
+            }
+        } while (newState != null && !compareAndSwapState(currentState, newState));
         return callback;
     }
 
