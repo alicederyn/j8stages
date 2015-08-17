@@ -1,11 +1,13 @@
 package org.inferred.cjp39.j8stages;
 
-import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.CompletableFuture.completedFuture;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+
+import static com.google.common.truth.Truth.assertThat;
 
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -105,11 +107,35 @@ public class MyFutureTest {
     }
 
     @Test
+    public void a_hundred_thousand_dependent_completion_stages() {
+        CompletableFuture<Integer> head = new CompletableFuture<>();
+        CompletableFuture<Integer> tail = head;
+        for (int i = 0; i < 100_000; i++) {
+            tail = tail.thenApply(v -> v + 1);
+        }
+        head.complete(7);
+        assertEquals(100_007, (int) tail.getNow(-1));
+    }
+
+    @Test
     public void a_hundred_thousand_dependent_stages_do_not_overflow() {
         MyFuture<Integer> head = new MyFuture<>();
         MyFuture<Integer> tail = head;
         for (int i = 0; i < 100_000; i++) {
             tail = tail.thenApply(v -> v + 1);
+        }
+        head.complete(7);
+        assertEquals(100_007, (int) tail.getNow(-1));
+    }
+
+    @Test
+    public void a_hundred_thousand_recursive_style_callbacks_with_MyFuture() {
+        MyFuture<Integer> head = new MyFuture<>();
+        MyFuture<Integer> tail = head;
+        for (int i = 0; i < 100_000; i++) {
+            MyFuture<Integer> newTail = new MyFuture<>();
+            tail.thenAccept(v -> newTail.complete(v + 1));
+            tail = newTail;
         }
         head.complete(7);
         assertEquals(100_007, (int) tail.getNow(-1));
@@ -136,6 +162,30 @@ public class MyFutureTest {
         }
         head.complete(7);
         assertEquals(100_007, (int) tail.getNow(-1));
+    }
+
+    @Test
+    public void two_thousand_stages_of_listenable_futures_overflows() {
+        SettableFuture<Integer> head = SettableFuture.create();
+        ListenableFuture<Integer> tail = head;
+        for (int i = 0; i < 2_000; i++) {
+            tail = Futures.transform(tail, (Integer x) -> x + 1);
+        }
+        head.set(7);
+        assertFalse(tail.isDone());
+    }
+
+    @Test
+    public void two_thousand_stages_of_explicitly_completing_futures_overflows() {
+        CompletableFuture<Integer> head = new CompletableFuture<>();
+        CompletableFuture<Integer> tail = head;
+        for (int i = 0; i < 2_000; i++) {
+            CompletableFuture<Integer> newTail = new CompletableFuture<>();
+            tail.thenAccept(v -> newTail.complete(v + 1));
+            tail = newTail;
+        }
+        head.complete(7);
+        assertFalse(tail.isDone());
     }
 
     @Test
@@ -251,6 +301,15 @@ public class MyFutureTest {
         } catch (CompletionException e) {
             assertEquals(x, e.getCause());
         }
+    }
+
+    @Test
+    public void acceptEither_doesnt_short_circuit() {
+        CompletableFuture<Integer> a = new CompletableFuture<>();
+        CompletableFuture<Integer> b = new CompletableFuture<>();
+        CompletableFuture<Integer> c = a.thenCombine(b, (w, v) -> w + v);
+        b.completeExceptionally(new IllegalStateException());
+        assertFalse(c.isCompletedExceptionally());
     }
 
 }
